@@ -3,7 +3,7 @@ import os
 import re
 import numpy as np
 from rlntm import RLNTM
-from data_generator import DataGenerator
+from data_generator import DuplicateData
 from utils import *
 
 
@@ -13,18 +13,34 @@ class Training:
     def __init__(self, params):
         self.params = params
 
-        self.batches = DataGenerator(self.params.max_length, self.params.batch_size, self.params.num_symbols)
+        self.batches = DuplicateData(self.params.max_length, self.params.batch_size,
+                                     self.params.num_symbols, self.params.dup_factor)
+
+        total_length = self.params.max_length * self.params.dup_factor
+
+        self.state = tf.placeholder(tf.float32,
+                                    [2, None, self.params.rnn_hidden], name='state')
         self.input = tf.placeholder(tf.float32,
-                                    [None, self.params.max_length, self.params.num_symbols], name='input')
+                                    [None, total_length, self.params.num_symbols], name='input')
         self.target = tf.placeholder(tf.float32,
-                                     [None, self.params.max_length, self.params.num_symbols], name='target')
-        self.model = RLNTM(self.params, self.input, self.target)
+                                     [None, total_length, self.params.num_symbols], name='target')
+        self.in_move = tf.placeholder(tf.float32,
+                                      [None, total_length, self.params.in_move_table.__len__()], name='in_move')
+        self.out_move = tf.placeholder(tf.float32,
+                                       [None, total_length, self.params.out_move_table.__len__()], name='out_move')
+        self.mem_move = tf.placeholder(tf.float32,
+                                       [None, total_length, self.params.mem_move_table.__len__()], name='mem_move')
+        self.out_mask = tf.placeholder(tf.float32,
+                                       [None, total_length], name='out_mask')
+        self.model = RLNTM(self.params, self.input, self.target,
+                           self.in_move, self.out_move, self.mem_move,
+                           self.out_mask, self.state)
         self._init_or_load_session()
 
     def __call__(self):
         print('Start training!')
 
-        self.logprobs = []
+        self.costs = []
         batches = iter(self.batches)
 
         for epoch in range(self.epoch, self.params.epochs + 1):
@@ -38,24 +54,51 @@ class Training:
         writer = tf.summary.FileWriter('./my_graph', self.sess.graph)
         writer.close()
 
-        return np.array(self.logprobs)
+        return np.array(self.costs)
 
     def _optimization(self, batch):
-        logprob, error = self.sess.run((self.model.logprob, self.model.error),
-                                       {self.input: batch, self.target: batch})
 
-        print(error)
+        # generate fake moves
+        in_moves = np.zeros((batch.shape[0], batch.shape[1], self.params.in_move_table.__len__()))
+        mem_moves = np.zeros((batch.shape[0], batch.shape[1], self.params.mem_move_table.__len__()))
+        out_moves = np.zeros((batch.shape[0], batch.shape[1], self.params.out_move_table.__len__()))
 
-        if np.isnan(logprob):
-            raise Exception('training diverged')
-        self.logprobs.append(logprob)
+        in_moves[:, :, 2] = np.ones((batch.shape[0], batch.shape[1]))
+        mem_moves[:, 2::3, 2] = np.ones((batch.shape[0], batch.shape[1] // 3))
+        out_moves[:, 1::3, 1] = np.ones((batch.shape[0], batch.shape[1] // 3))
+
+        pred_list = []
+        state = np.zeros((2, batch.shape[0], self.params.rnn_hidden))
+        for i in range(batch.shape[1]):
+            step = np.zeros(batch.shape)
+            step[:, 0, :] = batch[:, 0, :]
+
+            prediction, state_tuple = self.sess.run([self.model.prediction, self.model.state],
+                                              {self.state: state,
+                                               self.input: step, self.target: step,
+                                               self.in_move: in_moves, self.mem_move: mem_moves, self.out_move: out_moves,
+                                               self.out_mask: np.sum(mem_moves, axis=2)})
+
+            state[0] = state_tuple[0]
+            state[1] = state_tuple[1]
+
+            pred_list.append(prediction[:, 0, :])
+
+        state = np.zeros((2, batch.shape[0], self.params.rnn_hidden))
+        cost, _ = self.sess.run((self.model.cost, self.model.optimize),
+                                 {self.state: state,
+                                  self.input: batch, self.target: batch,
+                                  self.in_move: in_moves, self.mem_move: mem_moves, self.out_move: out_moves,
+                                  self.out_mask: np.sum(mem_moves, axis=2)})
+
+        print(cost)
+        self.costs.append(cost)
 
     def _evaluation(self):
-        # self.saver.save(self.sess, os.path.join(
-        #     self.params.checkpoint_dir, 'model'), self.epoch)
-        perplexity = 2 ** -(sum(self.logprobs[-self.params.epoch_size:]) / self.params.epoch_size)
+        self.saver.save(self.sess, os.path.join(
+            self.params.checkpoint_dir, 'model'), self.epoch)
 
-        print('Epoch {:2d} perplexity {:5.1f}'.format(self.epoch, perplexity))
+        print('Epoch {:2d} cost {:1.10f}'.format(self.epoch, self.costs[-1]))
 
     def _init_or_load_session(self):
         self.sess = tf.Session()
