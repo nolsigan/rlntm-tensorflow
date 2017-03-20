@@ -2,6 +2,7 @@ import tensorflow as tf
 import tensorflow.contrib.rnn as rnn
 from attr_dict import AttrDict
 from training import Training
+from testing import Testing
 
 
 def get_params():
@@ -9,11 +10,11 @@ def get_params():
     max_length = 6
     rnn_cell = rnn.BasicLSTMCell
     rnn_hidden = 128
-    learning_rate = 0.003
+    learning_rate = 0.03
     optimizer = tf.train.AdamOptimizer()
     gradient_clipping = 5
     batch_size = 100
-    epochs = 3
+    epochs = 30
     epoch_size = 100
     num_symbols = 10
     dup_factor = 2
@@ -24,4 +25,6 @@ def get_params():
     return AttrDict(**locals())
 
 
-Training(get_params())()
+# Training(get_params())()
+
+Testing(get_params())()

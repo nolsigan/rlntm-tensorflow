@@ -4,9 +4,8 @@ from utils import *
 
 class RLNTM:
 
-    def __init__(self, params, input_, target,
-                 in_move, out_move, mem_move, out_mask,
-                 initial=None):
+    def __init__(self, params, input_, initial, target,
+                 in_move, out_move, mem_move, out_mask, init_input, init_length):
         self.params = params
         self.input = input_
         self.target = target
@@ -15,7 +14,10 @@ class RLNTM:
         self.mem_move = mem_move
         self.out_mask = out_mask
         self.initial = initial
+        self.init_input = init_input
+        self.init_length= init_length
 
+        self.init_state
         self.hidden
         self.state
         self.prediction
@@ -27,29 +29,43 @@ class RLNTM:
 
     @lazy_property
     def mask(self):
-        with tf.name_scope("mask"):
+        with tf.variable_scope("mask"):
             return tf.reduce_max(tf.abs(self.target), reduction_indices=2)
 
     @lazy_property
     def length(self):
-        with tf.name_scope("length"):
+        with tf.variable_scope("length"):
             return tf.reduce_sum(self.mask, reduction_indices=1)
 
     @lazy_property
     def hidden(self):
-        with tf.name_scope("hidden"):
+        with tf.variable_scope("hidden"):
             hidden, _ = self.forward
             return hidden
 
     @lazy_property
     def state(self):
-        with tf.name_scope("state"):
+        with tf.variable_scope("state"):
             _, state = self.forward
             return state[0], state[1]
 
     @lazy_property
+    def init_state(self):
+        with tf.variable_scope("init_state"):
+            unpacked = tf.unstack(self.initial, axis=0)
+            cell = self.params.rnn_cell(self.params.rnn_hidden, state_is_tuple=True)
+            _, state = tf.nn.dynamic_rnn(
+                inputs=self.init_input,
+                cell=cell,
+                dtype=tf.float32,
+                initial_state=tf.contrib.rnn.LSTMStateTuple(unpacked[0], unpacked[1]),
+                sequence_length=self.init_length)
+
+            return state[0], state[1]
+
+    @lazy_property
     def forward(self):
-        with tf.name_scope("forward"):
+        with tf.variable_scope("forward"):
             unpacked = tf.unstack(self.initial, axis=0)
             cell = self.params.rnn_cell(self.params.rnn_hidden, state_is_tuple=True)
             hidden, state = tf.nn.dynamic_rnn(
@@ -63,7 +79,7 @@ class RLNTM:
 
     @lazy_property
     def prediction(self):
-        with tf.name_scope("prediction"):
+        with tf.variable_scope("prediction"):
             num_symbols = int(self.target.get_shape()[2])
             max_length = int(self.target.get_shape()[1])
 
@@ -81,7 +97,7 @@ class RLNTM:
 
         max_length = int(self.target.get_shape()[1])
 
-        with tf.name_scope("in_move"):
+        with tf.variable_scope("in_move"):
             in_moves = self.params.in_move_table.__len__()
 
             weight = tf.Variable(tf.truncated_normal(
@@ -92,7 +108,7 @@ class RLNTM:
             in_move_logits = tf.nn.softmax(tf.matmul(output, weight) + bias)
             in_move_logits = tf.reshape(in_move_logits, [-1, max_length, in_moves])
 
-        with tf.name_scope("mem_move"):
+        with tf.variable_scope("mem_move"):
             mem_moves = self.params.mem_move_table.__len__()
 
             weight = tf.Variable(tf.truncated_normal(
@@ -103,7 +119,7 @@ class RLNTM:
             mem_move_logits = tf.nn.softmax(tf.matmul(output, weight) + bias)
             mem_move_logits = tf.reshape(mem_move_logits, [-1, max_length, mem_moves])
 
-        with tf.name_scope("out_move"):
+        with tf.variable_scope("out_move"):
             out_moves = self.params.out_move_table.__len__()
 
             weight = tf.Variable(tf.truncated_normal(
@@ -118,7 +134,7 @@ class RLNTM:
 
     @lazy_property
     def cost(self):
-        with tf.name_scope("cost"):
+        with tf.variable_scope("cost"):
             prediction = tf.clip_by_value(self.prediction, 1e-10, 1.0)
             cost = self.target * tf.log(prediction)
             cost = -tf.reduce_sum(cost, reduction_indices=2) * self.out_mask
@@ -134,18 +150,18 @@ class RLNTM:
             out_cost = self.out_move * tf.log(out_move_logits)
             out_cost = -tf.reduce_sum(out_cost, reduction_indices=2)
 
-            return self._average(cost + in_cost + mem_cost + out_cost)
+            return self._average(cost, is_dup=True) + self._average(in_cost+mem_cost+out_cost)
 
     @lazy_property
     def error(self):
-        with tf.name_scope("error"):
+        with tf.variable_scope("error"):
             error = tf.not_equal(tf.argmax(self.prediction, 2), tf.argmax(self.target, 2))
             error = tf.cast(error, tf.float32)
             return self._average(error)
 
     @lazy_property
     def logprob(self):
-        with tf.name_scope("logprob"):
+        with tf.variable_scope("logprob"):
             logprob = tf.multiply(self.prediction, self.target)
             logprob = tf.reduce_max(logprob, reduction_indices=2)
             logprob = tf.log(tf.clip_by_value(logprob, 1e-10, 1.0)) / tf.log(2.0)
@@ -153,7 +169,7 @@ class RLNTM:
 
     @lazy_property
     def optimize(self):
-        with tf.name_scope("optimize"):
+        with tf.variable_scope("optimize"):
             gradient = self.params.optimizer.compute_gradients(self.cost)
             if self.params.gradient_clipping:
                 limit = self.params.gradient_clipping
@@ -165,11 +181,15 @@ class RLNTM:
             optimize = self.params.optimizer.apply_gradients(gradient)
             return optimize
 
-    def _average(self, data):
-        with tf.name_scope("average"):
+    def _average(self, data, is_dup=False):
+        with tf.variable_scope("average"):
             data *= self.mask
-            length = tf.reduce_sum(self.length, 0)
-            data = tf.reduce_sum(data, reduction_indices=1) / length
+
+            if is_dup:
+                data = tf.reduce_sum(data, reduction_indices=1) / (self.length / self.params.dup_factor)
+            else:
+                data = tf.reduce_sum(data, reduction_indices=1) / self.length
+
             data = tf.reduce_mean(data)
             return data
 
