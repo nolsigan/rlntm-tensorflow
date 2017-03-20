@@ -15,7 +15,8 @@ class Training:
         self.params = params
 
         self.batches = DuplicateData(self.params.max_length, self.params.batch_size,
-                                     self.params.num_symbols, self.params.dup_factor)
+                                     self.params.num_symbols, self.params.dup_factor,
+                                     min_length=3)
 
         total_length = self.params.max_length * self.params.dup_factor
 
@@ -38,15 +39,9 @@ class Training:
         self.out_mask = tf.placeholder(tf.float32,
                                        [None, total_length], name='out_mask')
 
-        # initial input to make initial state
-        self.init_input = tf.placeholder(tf.float32,
-                                         [None, total_length, self.params.num_symbols], name='init_input')
-        self.init_length = tf.placeholder(tf.float32,
-                                          [None], name='init_length')
-
         self.model = RLNTM(self.params, self.input, self.state, self.target,
                            self.in_move, self.out_move, self.mem_move,
-                           self.out_mask, self.init_input, self.init_length)
+                           self.out_mask)
         self._init_or_load_session()
 
     def __call__(self):
@@ -85,10 +80,8 @@ class Training:
         in_moves[:, :, 2] = np.ones((batch.shape[0], batch.shape[1]))
         mem_moves[:, :, 1] = np.ones((batch.shape[0], batch.shape[1]))
         out_moves[:, :, 0] = np.ones((batch.shape[0], batch.shape[1]))
-        # mem_moves[:, self.params.dup_factor-1::self.params.dup_factor, 1] \
         out_moves[:, 0::self.params.dup_factor, 0] \
             = np.zeros((batch.shape[0], batch.shape[1] // self.params.dup_factor))
-        # mem_moves[:, self.params.dup_factor-1::self.params.dup_factor, 2] \
         out_moves[:, 0::self.params.dup_factor, 1] \
             = np.ones((batch.shape[0], batch.shape[1] // self.params.dup_factor))
 
@@ -102,17 +95,7 @@ class Training:
             = np.ones((batch.shape[0], batch.shape[1] // self.params.dup_factor))
 
         input_track = step = np.zeros((batch.shape[0], batch.shape[1], batch.shape[2] + self.params.rnn_hidden + 3))
-        state = np.zeros((2, batch.shape[0], self.params.rnn_hidden))
-
-        # go through input in reverse
-        init_length = np.ones((batch.shape[0])) * batch.shape[1]
-        state_tuple = self.sess.run(self.model.init_state,
-                                    {self.state: state,
-                                     self.init_input: batch[:, ::-1, :],
-                                     self.init_length: init_length})
-
-        state[0] = state_tuple[0]
-        state[1] = state_tuple[1]
+        state = init_state = np.zeros((2, batch.shape[0], self.params.rnn_hidden))
 
         for i in range(batch.shape[1]):
             # read from input_tape, memory_tape
@@ -127,16 +110,11 @@ class Training:
                                                        {self.state: state,
                                                         self.input: step, self.target: batch,
                                                         self.in_move: in_moves, self.mem_move: mem_moves, self.out_move: out_moves,
-                                                        self.out_mask: out_mask, self.init_input: batch})
+                                                        self.out_mask: out_mask})
 
             # update state
             state[0] = state_tuple[0]
             state[1] = state_tuple[1]
-
-            # sample from logits
-            #in_move = sample(moves[0])
-            #mem_move = sample(moves[1])
-            #out_move = sample(moves[2])
 
             # -- use fake moves for only-supervised-learning
             in_move_logits = in_moves[:, i, :].astype(np.int32)
@@ -155,11 +133,8 @@ class Training:
             mem_tape.move_ptr(mem_move)
             output_tape.move_ptr(out_move)
 
-            # calculate gain
-
-        state = np.zeros((2, batch.shape[0], self.params.rnn_hidden))
         cost, _ = self.sess.run((self.model.cost, self.model.optimize),
-                                {self.state: state,
+                                {self.state: init_state,
                                 self.input: input_track, self.target: batch,
                                 self.in_move: in_moves, self.mem_move: mem_moves, self.out_move: out_moves,
                                 self.out_mask: out_mask})

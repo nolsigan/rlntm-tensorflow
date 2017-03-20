@@ -5,7 +5,7 @@ from utils import *
 class RLNTM:
 
     def __init__(self, params, input_, initial, target,
-                 in_move, out_move, mem_move, out_mask, init_input, init_length):
+                 in_move, out_move, mem_move, out_mask):
         self.params = params
         self.input = input_
         self.target = target
@@ -14,17 +14,12 @@ class RLNTM:
         self.mem_move = mem_move
         self.out_mask = out_mask
         self.initial = initial
-        self.init_input = init_input
-        self.init_length= init_length
 
-        self.init_state
         self.hidden
         self.state
         self.prediction
         self.moves
         self.cost
-        self.error
-        self.logprob
         self.optimize
 
     @lazy_property
@@ -47,20 +42,6 @@ class RLNTM:
     def state(self):
         with tf.variable_scope("state"):
             _, state = self.forward
-            return state[0], state[1]
-
-    @lazy_property
-    def init_state(self):
-        with tf.variable_scope("init_state"):
-            unpacked = tf.unstack(self.initial, axis=0)
-            cell = self.params.rnn_cell(self.params.rnn_hidden, state_is_tuple=True)
-            _, state = tf.nn.dynamic_rnn(
-                inputs=self.init_input,
-                cell=cell,
-                dtype=tf.float32,
-                initial_state=tf.contrib.rnn.LSTMStateTuple(unpacked[0], unpacked[1]),
-                sequence_length=self.init_length)
-
             return state[0], state[1]
 
     @lazy_property
@@ -151,21 +132,6 @@ class RLNTM:
             out_cost = -tf.reduce_sum(out_cost, reduction_indices=2)
 
             return self._average(cost, is_dup=True) + self._average(in_cost+mem_cost+out_cost)
-
-    @lazy_property
-    def error(self):
-        with tf.variable_scope("error"):
-            error = tf.not_equal(tf.argmax(self.prediction, 2), tf.argmax(self.target, 2))
-            error = tf.cast(error, tf.float32)
-            return self._average(error)
-
-    @lazy_property
-    def logprob(self):
-        with tf.variable_scope("logprob"):
-            logprob = tf.multiply(self.prediction, self.target)
-            logprob = tf.reduce_max(logprob, reduction_indices=2)
-            logprob = tf.log(tf.clip_by_value(logprob, 1e-10, 1.0)) / tf.log(2.0)
-            return self._average(logprob)
 
     @lazy_property
     def optimize(self):

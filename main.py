@@ -1,3 +1,4 @@
+import sys
 import tensorflow as tf
 import tensorflow.contrib.rnn as rnn
 from attr_dict import AttrDict
@@ -10,7 +11,7 @@ def get_params():
     max_length = 6
     rnn_cell = rnn.BasicLSTMCell
     rnn_hidden = 128
-    learning_rate = 0.03
+    learning_rate = 0.003
     optimizer = tf.train.AdamOptimizer()
     gradient_clipping = 5
     batch_size = 100
@@ -25,6 +26,11 @@ def get_params():
     return AttrDict(**locals())
 
 
-# Training(get_params())()
+mode = sys.argv[1]
 
-Testing(get_params())()
+if mode == '--train':
+    Training(get_params())()
+elif mode == '--test':
+    Testing(get_params())()
+else:
+    print('no mode specified, please use --train or --test as first argument')

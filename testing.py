@@ -15,7 +15,7 @@ class Testing:
         self.total_length = self.params.max_length * self.params.dup_factor
 
         self.sequences = DuplicateData(self.params.max_length, 1,
-                                       self.params.num_symbols, self.params.dup_factor)
+                                       self.params.num_symbols, self.params.dup_factor, 3)
 
         self.state = tf.placeholder(tf.float32,
                                     [2, 1, self.params.rnn_hidden], name='state')
@@ -34,14 +34,8 @@ class Testing:
         self.out_mask = tf.placeholder(tf.float32,
                                        [1, 1], name='out_mask')
 
-        # initial input to make initial state
-        self.init_input = tf.placeholder(tf.float32,
-                                         [None, self.total_length, self.params.num_symbols], name='init_input')
-        self.init_length = tf.placeholder(tf.float32,
-                                          [None], name='init_length')
-
         self.model = RLNTM(self.params, self.input, self.state, self.target,
-                           self.in_move, self.out_move, self.mem_move, self.out_mask, self.init_input, self.init_length)
+                           self.in_move, self.out_move, self.mem_move, self.out_mask)
 
         self.sess = tf.Session()
         checkpoint = tf.train.get_checkpoint_state(self.params.checkpoint_dir)
@@ -61,7 +55,8 @@ class Testing:
         input_tape = Tape(1, self.total_length, self.params.num_symbols, self.params.in_move_table,
                           initial=sequence)
         mem_tape = Tape(1, self.total_length, self.params.rnn_hidden, self.params.mem_move_table)
-        output_tape = Tape(1, self.params.max_length, self.params.num_symbols, self.params.out_move_table)
+        output_tape = Tape(1, self.params.max_length, self.params.num_symbols, self.params.out_move_table,
+                           initial=np.ones((1, self.params.max_length, self.params.num_symbols)) * -1)
 
         step = np.zeros((1, 1, self.params.num_symbols + self.params.rnn_hidden + 3))
         target = np.zeros((1, 1, self.params.num_symbols))
@@ -72,16 +67,6 @@ class Testing:
         last_out_moves = np.ones((1, 1))
 
         input_tape.print_tape()
-
-        # go through input in reverse
-        init_length = np.ones((sequence.shape[0])) * sequence.shape[1]
-        state_tuple = self.sess.run(self.model.init_state,
-                                    {self.state: state,
-                                     self.init_input: sequence[:, ::-1, :],
-                                     self.init_length: init_length})
-
-        state[0] = state_tuple[0]
-        state[1] = state_tuple[1]
 
         for i in range(sequence.shape[1]):
             print("=======================")
@@ -126,13 +111,14 @@ class Testing:
             mem_tape.move_ptr(mem_move)
             output_tape.move_ptr(out_move)
 
-            print("in_move : ", moves[0], " => ", in_sample, " => ", in_move)
-            print("mem_move : ", moves[1], " => ", mem_sample, " => ", mem_move)
-            print("out_move : ", moves[2], " => ", out_sample, " => ", out_move)
+            print("in_logits :", moves[0], ", in_move :", in_move, ", in_pos :", input_tape.get_ptr())
+            print("mem_logits :", moves[1], ", mem_move :", mem_move, ", mem_pos :", mem_tape.get_ptr())
+            print("out_logits :", moves[2], ", out_move :", out_move, ", out_pos :", output_tape.get_ptr())
 
             if out_move[0] == 1:
                 print("prediction")
                 print(prediction[:, 0, :])
+                print("==> ", np.argmax(prediction[:, 0, :], axis=1))
 
             print("=======================")
 
